@@ -30,6 +30,7 @@ import app.morphe.manager.domain.installer.InstallerManager
 import app.morphe.manager.domain.installer.RootInstaller
 import app.morphe.manager.domain.manager.*
 import app.morphe.manager.domain.repository.*
+import app.morphe.manager.network.service.HttpService
 import app.morphe.manager.patcher.patch.*
 import app.morphe.manager.patcher.runtime.PatcherProcesses
 import app.morphe.manager.patcher.patch.PatchBundleInfo.Extensions.contributingAt
@@ -195,6 +196,7 @@ class PatchFlow(
     private val appDataResolver: AppDataResolver,
     private val batchPatchCoordinator: BatchPatchCoordinator,
     private val downloadUrlResolver: DownloadUrlResolver,
+    private val http: HttpService,
     private val localApkSources: LocalApkSources,
     private val compatibleVersions: StateFlow<Map<String, List<BundledAppTarget>>>,
     private val recommendedVersions: StateFlow<Map<String, AppTarget>>,
@@ -203,6 +205,21 @@ class PatchFlow(
 ) : ApkDownloadHelperHost {
     /** The dialogs the flow has open, see [HomeDialog]. */
     val dialogs = HomeDialogStack()
+
+    /** In-app download of the original YouTube or YouTube Music APK. */
+    val originalDownloads = OriginalDownloadController(
+        scope = scope,
+        http = http,
+        urls = downloadUrlResolver,
+        store = ApkVariantStore(prefs),
+        tempDir = filesystem.uiTempDir,
+        patchSources = { packageName ->
+            val current = session?.takeIf { it.packageName == packageName }
+            val uids = current?.let(::downloadSourceUids).orEmpty()
+            patchBundleRepository.patchSourceHeaders(packageName, uids)
+        },
+        onReady = { file -> acceptDownloadedApk(file) }
+    )
 
     /** The run being set up, null while there is none. */
     var session by mutableStateOf<PatchFlowSession?>(null)
@@ -435,6 +452,8 @@ class PatchFlow(
         if (shouldAutoUseSaved) {
             // Skip dialog and use saved APK directly
             handleSavedApkSelection()
+        } else if (!expertMode && KnownApps.supportsOriginalDownload(packageName)) {
+            showApkVariantDownload(replace = true)
         } else {
             // Show dialog
             dialogs.advanceTo(HomeDialog.ApkAvailability)
@@ -687,33 +706,46 @@ class PatchFlow(
         scope.launch {
             processingApkSelection = true
             try {
-                val result = withContext(Dispatchers.IO) {
-                    loadLocalApk(uri)
-                }
-
-                when (result) {
-                    is ApkLoadResult.Success -> {
-                        pickedApk = result
-                        // A run for any app is named by the section it started from until the file
-                        // says which app it is, as the installed app picker names it by its label
-                        session = session?.let { current ->
-                            if (current.packageName == null) {
-                                current.copy(appName = appNameFor(result.app.packageName))
-                            } else current
-                        }
-                        // Picked in place of the one held for a warning, which it takes the run over from
-                        heldApp?.discard()
-                        heldApp = null
-                        processSelectedApp(result.app)
-                    }
-                    is ApkLoadResult.Unreadable -> messages.show(R.string.home_invalid_apk_unreadable)
-                    is ApkLoadResult.NotAnApk -> messages.show(R.string.home_invalid_apk_not_an_apk)
-                    is ApkLoadResult.AlreadyPatched -> messages.show(R.string.home_invalid_apk_already_patched)
-                    is ApkLoadResult.IoError -> messages.show(R.string.home_invalid_apk_io_error)
-                }
+                continueLoaded(withContext(Dispatchers.IO) { loadLocalApk(uri) })
             } finally {
                 processingApkSelection = false
             }
+        }
+    }
+
+    /** Takes an original APK the in-app download saved and runs it through the usual checks. */
+    private suspend fun acceptDownloadedApk(file: File) {
+        processingApkSelection = true
+        try {
+            val result = withContext(Dispatchers.IO) { loadApkFile(file) }
+            // A file the checks turn down leaves the form up, so another download can be tried
+            if (result !is ApkLoadResult.Success) originalDownloads.reopen()
+            continueLoaded(result)
+        } finally {
+            processingApkSelection = false
+        }
+    }
+
+    private suspend fun continueLoaded(result: ApkLoadResult) {
+        when (result) {
+            is ApkLoadResult.Success -> {
+                pickedApk = result
+                // A run for any app is named by the section it started from until the file
+                // says which app it is, as the installed app picker names it by its label
+                session = session?.let { current ->
+                    if (current.packageName == null) {
+                        current.copy(appName = appNameFor(result.app.packageName))
+                    } else current
+                }
+                // Picked in place of the one held for a warning, which it takes the run over from
+                heldApp?.discard()
+                heldApp = null
+                processSelectedApp(result.app)
+            }
+            is ApkLoadResult.Unreadable -> messages.show(R.string.home_invalid_apk_unreadable)
+            is ApkLoadResult.NotAnApk -> messages.show(R.string.home_invalid_apk_not_an_apk)
+            is ApkLoadResult.AlreadyPatched -> messages.show(R.string.home_invalid_apk_already_patched)
+            is ApkLoadResult.IoError -> messages.show(R.string.home_invalid_apk_io_error)
         }
     }
 
@@ -1547,6 +1579,36 @@ class PatchFlow(
         handleHelperInstalledAppSelection(packageName)
     }
 
+    /**
+     * Opens the in-app download for YouTube or YouTube Music.
+     *
+     * [replace] drops the availability step, which simple mode does because that step only
+     * existed to send the user to a website.
+     */
+    fun showApkVariantDownload(replace: Boolean = false) {
+        val current = session ?: return
+        val packageName = current.packageName ?: return
+        originalDownloads.open(
+            packageName = packageName,
+            appName = current.appName,
+            version = current.requestedVersion,
+            detected = detectApkPhoneProfile()
+        )
+        if (replace) dialogs.advanceTo(HomeDialog.ApkVariantDownload)
+        else dialogs.open(HomeDialog.ApkVariantDownload)
+    }
+
+    fun dismissOriginalDownload() {
+        originalDownloads.close()
+        backFromApkSource()
+    }
+
+    /** Leaves the in-app download and opens the website instructions for the same version. */
+    fun useWebsiteForOriginal() {
+        originalDownloads.pause()
+        showDownloadInstructions()
+    }
+
     /** Opens the download instructions over the APK availability, which going back returns to. */
     fun showDownloadInstructions() {
         dialogs.open(HomeDialog.DownloadInstructions)
@@ -1585,6 +1647,7 @@ class PatchFlow(
     /** Gives up the run being set up, the APK held for it and the dialogs it went through included. */
     private fun endRun() {
         downloadRedirectJob?.cancel()
+        originalDownloads.close()
         heldApp?.discard()
         heldApp = null
         session = null
@@ -1621,11 +1684,20 @@ class PatchFlow(
         try {
             val tempFile = uri.copyApkInto(filesystem.uiTempDir, "temp_apk", app.contentResolver)
                 ?: return@withContext ApkLoadResult.Unreadable
+            loadApkFile(tempFile)
+        } catch (e: Exception) {
+            Log.e(tag, "Failed to load APK", e)
+            ApkLoadResult.IoError
+        }
+    }
 
+    /** Reads an APK already copied into the app's own storage. Deletes [file] when it cannot be used. */
+    private suspend fun loadApkFile(file: File): ApkLoadResult = withContext(Dispatchers.IO) {
+        try {
             // A split archive is read through its base module, deleted after the call, so the icon
             // and the label are read in it
             val result = SplitApkInspector.withRepresentativeApk(
-                source = tempFile,
+                source = file,
                 workspace = filesystem.uiTempDir
             ) { apk ->
                 val packageInfo = pm.getPackageInfo(apk)
@@ -1637,7 +1709,7 @@ class PatchFlow(
                             packageName = packageInfo.packageName,
                             version = packageInfo.versionName ?: "unknown",
                             versionCode = pm.getVersionCode(packageInfo),
-                            file = tempFile,
+                            file = file,
                             temporary = true
                         ),
                         icon = appDataResolver.detachedArchiveIcon(packageInfo),
@@ -1647,12 +1719,13 @@ class PatchFlow(
             }
 
             if (result == ApkLoadResult.NotAnApk) {
-                Log.w(tag, "Picked file ${tempFile.name} could not be parsed as an APK")
+                Log.w(tag, "Picked file ${file.name} could not be parsed as an APK")
             }
-            if (result !is ApkLoadResult.Success) tempFile.delete()
+            if (result !is ApkLoadResult.Success) file.delete()
             result
         } catch (e: Exception) {
             Log.e(tag, "Failed to load APK", e)
+            file.delete()
             ApkLoadResult.IoError
         }
     }

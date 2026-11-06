@@ -33,6 +33,8 @@ sealed interface HomeDialog {
     sealed interface ApkSource : HomeDialog
     data object ApkAvailability : ApkSource
     data object DownloadInstructions : ApkSource
+    /** Confirms the phone profile and downloads the original APK for YouTube or YouTube Music. */
+    data object ApkVariantDownload : ApkSource
     data object FilePickerPrompt : ApkSource
     data object InstalledAppPicker : ApkSource
 

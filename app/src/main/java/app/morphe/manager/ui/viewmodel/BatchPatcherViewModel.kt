@@ -19,9 +19,11 @@ import androidx.lifecycle.viewModelScope
 import app.morphe.manager.R
 import app.morphe.manager.data.platform.Filesystem
 import app.morphe.manager.data.room.apps.installed.InstallType
+import app.morphe.manager.domain.apk.ApkVariantStore
 import app.morphe.manager.domain.apk.InstalledApkInfo
 import app.morphe.manager.domain.apk.LocalApkSources
 import app.morphe.manager.domain.apk.SavedApkInfo
+import app.morphe.manager.domain.apk.detectApkPhoneProfile
 import app.morphe.manager.domain.batch.*
 import app.morphe.manager.domain.bundles.AppVersionCatalog
 import app.morphe.manager.domain.bundles.BundledAppTarget
@@ -29,6 +31,7 @@ import app.morphe.manager.domain.bundles.patchableBy
 import app.morphe.manager.domain.bundles.recommendedEntry
 import app.morphe.manager.domain.installer.RootInstaller
 import app.morphe.manager.domain.manager.DownloadUrlResolver
+import app.morphe.manager.network.service.HttpService
 import app.morphe.manager.domain.manager.PreferencesManager
 import app.morphe.manager.domain.repository.InstalledAppRepository
 import app.morphe.manager.domain.repository.PatchBundleRepository
@@ -276,6 +279,7 @@ class BatchPatcherViewModel(
     private val patchSelectionRepository: PatchSelectionRepository,
     private val sourceMuteRepository: SourceMuteRepository,
     private val downloadUrlResolver: DownloadUrlResolver,
+    private val http: HttpService,
     private val versionCatalog: AppVersionCatalog,
     private val localApkSources: LocalApkSources,
     private val prefs: PreferencesManager,
@@ -287,6 +291,28 @@ class BatchPatcherViewModel(
 
     /** Notification and tour prompts raised once the queue installs or saves an app. */
     val postPatchPrompts = PostPatchPrompts(app, prefs, viewModelScope)
+
+    /** Queued app the in-app download is filling, kept across the hand-off that clears the dialog. */
+    private var originalDownloadItemId: String? = null
+
+    /** Downloads the original YouTube or YouTube Music APK for one queued app. */
+    val originalDownloads = OriginalDownloadController(
+        scope = viewModelScope,
+        http = http,
+        urls = downloadUrlResolver,
+        store = ApkVariantStore(prefs),
+        tempDir = fs.uiTempDir,
+        patchSources = { packageName ->
+            val item = state.value?.items?.firstOrNull { it.packageName == packageName }
+            val uids = item?.chosenBundleUid?.let(::listOf) ?: item?.bundles?.map { it.uid }.orEmpty()
+            patchBundleRepository.patchSourceHeaders(packageName, uids)
+        },
+        onReady = { file ->
+            val id = originalDownloadItemId ?: return@OriginalDownloadController
+            originalDownloadItemId = null
+            settleGivenApk(id, coordinator.attachApk(id, file))
+        }
+    )
 
     /** Package the attach-APK picker was opened for, null when no picker is pending. */
     var attachTarget: String? by mutableStateOf(null)
@@ -451,6 +477,38 @@ class BatchPatcherViewModel(
 
     fun cancelApkSearch() {
         apkSearch = null
+    }
+
+    /** Opens the in-app download for a queued YouTube or YouTube Music app at [version]. */
+    fun beginOriginalDownload(item: BatchPatchItem, version: String?) {
+        apkChoice = null
+        originalDownloadItemId = item.id
+        originalDownloads.open(
+            packageName = item.packageName,
+            appName = item.appName,
+            version = version,
+            detected = detectApkPhoneProfile(),
+            batchItemId = item.id
+        )
+    }
+
+    fun dismissOriginalDownload() {
+        originalDownloadItemId = null
+        originalDownloads.close()
+    }
+
+    /** Leaves the in-app download and opens the website instructions for the same app. */
+    fun useWebsiteForOriginal() {
+        val id = originalDownloads.batchItemId ?: originalDownloadItemId ?: return
+        val version = originalDownloads.state?.version
+        val item = state.value?.items?.firstOrNull { it.id == id } ?: return
+        dismissOriginalDownload()
+        beginApkSearch(item, version)
+    }
+
+    override fun onCleared() {
+        originalDownloads.close()
+        super.onCleared()
     }
 
     /** App waiting for its downloaded file, null when nothing was sent to the browser. */

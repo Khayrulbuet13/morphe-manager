@@ -268,10 +268,33 @@ private fun DialogHostScope.PatchFlowDialog(
             hiddenSourceCount = session.hiddenSources,
             onDismiss = flow::backFromApkSource,
             onHaveApk = storagePickerLauncher,
-            onNeedApk = { apkDownloadHelpers.showInstructions(flow::showDownloadInstructions) },
+            onNeedApk = {
+                val packageName = session.packageName
+                if (packageName != null && KnownApps.supportsOriginalDownload(packageName)) {
+                    flow.showApkVariantDownload()
+                } else {
+                    apkDownloadHelpers.showInstructions(flow::showDownloadInstructions)
+                }
+            },
             onUseSaved = flow::handleSavedApkSelection,
             onUseInstalled = flow::handleInstalledApkSelection
         )
+
+        HomeDialog.ApkVariantDownload -> {
+            val download = flow.originalDownloads.state ?: return
+            ApkVariantDownloadDialog(
+                download = download,
+                onProfileChange = flow.originalDownloads::updateProfile,
+                onReset = flow.originalDownloads::resetProfile,
+                onStart = flow.originalDownloads::start,
+                onPage = flow.originalDownloads::onPage,
+                onFileUrl = flow.originalDownloads::onFileUrl,
+                onAcceptMismatch = flow.originalDownloads::acceptMismatch,
+                onHaveApk = storagePickerLauncher,
+                onUseWebsite = flow::useWebsiteForOriginal,
+                onDismiss = flow::dismissOriginalDownload
+            )
+        }
 
         // Dialog 2: Download instructions
         HomeDialog.DownloadInstructions -> {

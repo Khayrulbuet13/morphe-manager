@@ -186,6 +186,12 @@ class PreferencesManager(
     /** Whether asking for an APK starts the helper flow at once, over the download instructions. */
     val openApkDownloadHelperDirectly = booleanPreference("open_apk_download_helper_directly", false)
 
+    /**
+     * Corrections to the phone profile used when downloading YouTube or YouTube Music, as JSON.
+     * Tied to this phone, so never exported.
+     */
+    val apkVariantOverrides = stringPreference("apk_variant_overrides", "")
+
     val lastFilePickerPath = stringPreference("last_file_picker_path", "")
     val filePickerSortMode = stringPreference("file_picker_sort_mode", "DATE_DESC")
     val filePickerShowHiddenFiles = booleanPreference("file_picker_show_hidden_files", false)

@@ -285,6 +285,7 @@ fun BatchPatcherScreen(
     val queueDialogs = listOfNotNull(
         QueueDialog.SourcePick.takeIf { viewModel.sourcePick != null },
         QueueDialog.ApkChoice.takeIf { viewModel.apkChoice != null },
+        QueueDialog.OriginalDownload.takeIf { viewModel.originalDownloads.state != null },
         QueueDialog.ApkSearch.takeIf { viewModel.apkSearch != null },
         QueueDialog.AttachPrompt.takeIf { viewModel.attachPrompt != null },
         QueueDialog.Edit.takeIf { viewModel.edit != null }
@@ -334,12 +335,37 @@ fun BatchPatcherScreen(
                             attachApkTo(choice.item.id)
                         },
                         onNeedApk = {
-                            apkDownloadHelpers.showInstructions {
-                                viewModel.beginApkSearch(choice.item, choice.selectedVersion?.target?.version)
+                            val version = choice.selectedVersion?.target?.version
+                            if (KnownApps.supportsOriginalDownload(choice.item.packageName)) {
+                                viewModel.beginOriginalDownload(choice.item, version)
+                            } else {
+                                apkDownloadHelpers.showInstructions {
+                                    viewModel.beginApkSearch(choice.item, version)
+                                }
                             }
                         },
                         onUseSaved = { viewModel.useApkSource(preferInstalled = false) },
                         onUseInstalled = { viewModel.useApkSource(preferInstalled = true) }
+                    )
+                }
+
+                QueueDialog.OriginalDownload -> {
+                    val download = viewModel.originalDownloads.state ?: return@DialogStack
+                    ApkVariantDownloadDialog(
+                        download = download,
+                        onProfileChange = viewModel.originalDownloads::updateProfile,
+                        onReset = viewModel.originalDownloads::resetProfile,
+                        onStart = viewModel.originalDownloads::start,
+                        onPage = viewModel.originalDownloads::onPage,
+                        onFileUrl = viewModel.originalDownloads::onFileUrl,
+                        onAcceptMismatch = viewModel.originalDownloads::acceptMismatch,
+                        onHaveApk = {
+                            val id = viewModel.originalDownloads.batchItemId
+                            viewModel.dismissOriginalDownload()
+                            if (id != null) attachApkTo(id)
+                        },
+                        onUseWebsite = viewModel::useWebsiteForOriginal,
+                        onDismiss = viewModel::dismissOriginalDownload
                     )
                 }
 
@@ -684,7 +710,7 @@ fun BatchPatcherScreen(
 }
 
 /** The dialogs of the queue that hand over to one another, see [DialogStack]. */
-private enum class QueueDialog { SourcePick, ApkChoice, ApkSearch, AttachPrompt, Edit }
+private enum class QueueDialog { SourcePick, ApkChoice, OriginalDownload, ApkSearch, AttachPrompt, Edit }
 
 /** Footer buttons of the batch dialog, one pair per phase. */
 @Composable

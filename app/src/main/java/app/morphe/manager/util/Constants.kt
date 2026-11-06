@@ -53,6 +53,10 @@ object KnownApps {
     const val YOUTUBE       = "com.google.android.youtube"
     const val YOUTUBE_MUSIC = "com.google.android.apps.youtube.music"
     const val REDDIT        = "com.reddit.frontpage"
+
+    /** YouTube and YouTube Music are downloaded in the app from the phone's own profile. */
+    fun supportsOriginalDownload(packageName: String) =
+        packageName == YOUTUBE || packageName == YOUTUBE_MUSIC
     // const val X_TWITTER     = "com.twitter.android"
 
     // Shared Morphe brand gradient tail

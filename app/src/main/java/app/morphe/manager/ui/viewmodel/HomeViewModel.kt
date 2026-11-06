@@ -31,6 +31,7 @@ import app.morphe.manager.domain.manager.*
 import app.morphe.manager.domain.repository.*
 import app.morphe.manager.domain.repository.PatchBundleRepository.LocalFileCheck
 import app.morphe.manager.patcher.patch.*
+import app.morphe.manager.network.service.HttpService
 import app.morphe.manager.patcher.runtime.PatcherProcesses
 import app.morphe.manager.ui.model.*
 import app.morphe.manager.ui.screen.shared.UserMessages
@@ -89,6 +90,7 @@ class HomeViewModel(
 ) : ViewModel(), KoinComponent {
     // Past the parameters viewModelOf takes
     private val patcherProcesses: PatcherProcesses by inject()
+    private val http: HttpService by inject()
     private val patchOptionsPrefs: PatchOptionsPreferencesManager by inject()
 
     /** The app list on the home screen. */
@@ -319,6 +321,7 @@ class HomeViewModel(
         appDataResolver = appDataResolver,
         batchPatchCoordinator = batchPatchCoordinator,
         downloadUrlResolver = downloadUrlResolver,
+        http = http,
         localApkSources = localApkSources,
         compatibleVersions = compatibleVersionsFlow,
         recommendedVersions = recommendedVersionsFlow,
